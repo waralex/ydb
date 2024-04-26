@@ -32,6 +32,7 @@ SRCS(
     ask_ut.cpp
     event_pb_payload_ut.cpp
     event_pb_ut.cpp
+    event_bs_ut.cpp
     executor_pool_basic_ut.cpp
     log_ut.cpp
     mon_ut.cpp
