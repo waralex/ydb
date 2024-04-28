@@ -3,8 +3,6 @@
 #include <library/cpp/testing/unittest/registar.h>
 #include <numeric>
 #include <ranges>
-#include <string_view>
-#include <strstream>
 #include "util/datetime/base.h"
 #include "util/generic/reserve.h"
 #include "util/generic/vector.h"
@@ -135,12 +133,13 @@ namespace {
     };
 
 
+    template<typename TEv>
     class TSerializationBenchmarkUnit {
         size_t Count;
         size_t PayloadSize;
-        TVector<THolder<TEvBlobStorage::TEvVPut>> IncomingEvents;
+        TVector<THolder<TEv>> IncomingEvents;
         TVector<TIntrusivePtr<TEventSerializedData>> Buffers;
-        TVector<THolder<TEvBlobStorage::TEvVPut>> OutcomingEvents;
+        TVector<THolder<TEv>> OutcomingEvents;
     public:
         TSerializationBenchmarkUnit(size_t count, size_t payloadSize) : 
             Count(count), PayloadSize(payloadSize), IncomingEvents(Reserve(count)), Buffers(Reserve(count)), OutcomingEvents(Reserve(count)) {
@@ -176,7 +175,7 @@ namespace {
             auto start = TInstant::Now();
             for (auto& buff : Buffers) {
                 totalSize += buff->GetSize();
-                OutcomingEvents.emplace_back(static_cast<TEvBlobStorage::TEvVPut*>(TEvBlobStorage::TEvVPut::Load(buff.Get())));
+                OutcomingEvents.emplace_back(static_cast<TEv*>(TEv::Load(buff.Get())));
             }
             auto duration = TInstant::Now() - start;
             return BenchmarkResult::UnitResult(duration, totalSize, Count * PayloadSize, Count);
@@ -190,13 +189,14 @@ namespace {
             TLogoBlobID logoblobid(1, 1, 1, 0, 100, 3, 1);
 
             TVDiskID vDiskId(0, 1, 0, vDiskIdx , 0);
-            IncomingEvents.emplace_back(new TEvBlobStorage::TEvVPut(logoblobid, testData, vDiskId, false,
+            IncomingEvents.emplace_back(new TEv(logoblobid, testData, vDiskId, false,
                         nullptr, TInstant::Max(), NKikimrBlobStorage::AsyncBlob));
 
         }
 
     };
 
+    template<typename TEv>
     class TSerializationBenchmark {
         size_t CountInUnit;
         size_t UnitsCount;
@@ -210,7 +210,7 @@ namespace {
                 BenchmarkResult deserRes(UnitsCount);
                 auto totalDuration = TDuration();
                 for (size_t i = 0; i < UnitsCount; i++) {
-                    auto unit = TSerializationBenchmarkUnit(CountInUnit, PayloadSize);
+                    auto unit = TSerializationBenchmarkUnit<TEv>(CountInUnit, PayloadSize);
                     unit.Prepare();
                     auto start = TInstant::Now();
                     serRes.pushBack(unit.RunSerialization());
@@ -236,7 +236,17 @@ Y_UNIT_TEST_SUITE(TEvVPutSerializationTest) {
     Y_UNIT_TEST(Base) {
         {
             Cerr << "32 bytes of payload" << Endl;
-            TSerializationBenchmark bench(10000, 20,4096);
+            TSerializationBenchmark<TEvBlobStorage::TEvVPut> bench(1000, 20,4096);
+            auto [serRes, deserRes] = bench.Run();
+                Cerr << "    [========== Serialization Benchmark ===========]" << Endl;
+                serRes.OutStats(Cerr, 8);
+                Cerr << "    [========== Deserialization Benchmark ===========]" << Endl;
+                deserRes.OutStats(Cerr, 8);
+
+        }
+        {
+            Cerr << "32 bytes of payload bs" << Endl;
+            TSerializationBenchmark<TEvBlobStorage::TEvVPutBS> bench(1000, 20,4096);
             auto [serRes, deserRes] = bench.Run();
                 Cerr << "    [========== Serialization Benchmark ===========]" << Endl;
                 serRes.OutStats(Cerr, 8);

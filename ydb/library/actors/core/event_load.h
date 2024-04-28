@@ -75,6 +75,10 @@ namespace NActors {
             return Rope.Begin();
         }
 
+        TRope::TConstIterator GetEndIter() const {
+            return Rope.End();
+        }
+
         size_t GetSize() const {
             return Rope.GetSize();
         }

@@ -436,7 +436,8 @@ namespace NActors {
                 return false;
             }
 
-            return Record.SerializeToZeroCopyStream(chunker);
+            return true;
+            //return Record.SerializeToZeroCopyStream(chunker);
         }
 
     protected:

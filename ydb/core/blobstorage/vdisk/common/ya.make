@@ -22,6 +22,7 @@ SRCS(
     blobstorage_vdisk_guids.h
     defs.h
     disk_part.h
+    ev_v_put_record.h
     sublog.h
     vdisk_config.cpp
     vdisk_config.h
@@ -66,4 +67,8 @@ END()
 
 RECURSE_FOR_TESTS(
     ut
+)
+
+RECURSE(
+    vput_serialization_poc
 )
