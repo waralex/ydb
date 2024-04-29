@@ -2251,6 +2251,7 @@ struct TEvBlobStorage {
     struct TEvVInplacePatch;
     struct TEvVInplacePatchResult;
     struct TEvVPut;
+    struct TEvVPutBS;
     struct TEvVPutResult;
     struct TEvVMultiPut;
     struct TEvVMultiPutResult;

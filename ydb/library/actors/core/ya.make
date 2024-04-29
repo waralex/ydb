@@ -42,6 +42,7 @@ SRCS(
     event_local.h
     event_pb.cpp
     event_pb.h
+    event_bs.h
     events.cpp
     events.h
     events_undelivered.cpp
