@@ -5,17 +5,17 @@
 namespace BSRecords {
 
     struct TLogoBlobIDBS {
-        ui64 RawX1;
-        ui64 RawX2;
-        ui64 RawX3;
+        ui64 RawX1 = 0;
+        ui64 RawX2 = 0;
+        ui64 RawX3 = 0;
     };
 
     struct TVDiskIDBS {
-        ui32 GroupID;
-        ui32 GroupGeneration;
-        ui32 Ring;
-        ui32 Domain;
-        ui32 VDisk;
+        ui32 GroupID = 0;
+        ui32 GroupGeneration = 0;
+        ui32 Ring = 0;
+        ui32 Domain = 0;
+        ui32 VDisk = 0;
     };
 
     enum class EPutHandleClassBS : ui8 {
@@ -31,8 +31,8 @@ namespace BSRecords {
     struct TMessageIdBS {
         // (SequenceId, MsgId) pair identifies message order, used to
         // implement flow control (i.e. windows)
-        ui64 SequenceId;
-        ui64 MsgId;
+        ui64 SequenceId = 0;
+        ui64 MsgId = 0;
     };
 
     enum class EVDiskQueueIdBS : ui8 {
@@ -62,12 +62,12 @@ namespace BSRecords {
     };
 
     struct TVDiskCostSettingsBS {
-        ui64 SeekTimeUs;
-        ui64 ReadSpeedBps;
-        ui64 WriteSpeedBps;
-        ui64 ReadBlockSize;
-        ui64 WriteBlockSize;
-        ui32 MinREALHugeBlobInBytes;
+        ui64 SeekTimeUs = 0;
+        ui64 ReadSpeedBps = 0;
+        ui64 WriteSpeedBps = 0;
+        ui64 ReadBlockSize = 0;
+        ui64 WriteBlockSize = 0;
+        ui32 MinREALHugeBlobInBytes = 0;
     };
 
     struct TWindowFeedbackBS {
@@ -84,41 +84,40 @@ namespace BSRecords {
         };
 
         EStatus Status;
-        ui64 ActualWindowSize;
-        ui64 MaxWindowSize;
+        ui64 ActualWindowSize = 0;
+        ui64 MaxWindowSize = 0;
         TMessageIdBS ExpectedMsgId;
         TMessageIdBS FailedMsgId;
     };
 
     struct TExecTimeStatsBS {
         // dsproxy (i.e. sender) stats
-        ui64 SubmitTimestamp;  // local timestamp of request submission
-        ui64
-            InSenderQueue;  // time spent in BS_QUEUE or something like that
+        ui64 SubmitTimestamp = 0;  // local timestamp of request submission
+        ui64 InSenderQueue = 0;  // time spent in BS_QUEUE or something like that
 
         // vdisk (i.e. executor) stats
-        ui64 ReceivedTimestamp;  // local (to vdisk node) timestamp of
+        ui64 ReceivedTimestamp = 0;  // local (to vdisk node) timestamp of
                                     // request reception
-        ui64 Total;    // total time since reception of query until
+        ui64 Total = 0;    // total time since reception of query until
                         // transmission of reply
-        ui64 InQueue;  // time spent in queue (time spent since reception of
+        ui64 InQueue = 0;  // time spent in queue (time spent since reception of
                         // query until it was transferred to executor)
-        ui64 Execution;  // time spent while actually executing request
+        ui64 Execution = 0;  // time spent while actually executing request
 
         // detailed stats
-        ui64 HugeWriteTime;  // time spent while writing Huge Blob (included
+        ui64 HugeWriteTime = 0;  // time spent while writing Huge Blob (included
                                 // in Execution time)
     };
 
     struct TActorIdBS {
-        ui64 RawX1;
-        ui64 RawX2;
+        ui64 RawX1 = 0;
+        ui64 RawX2 = 0;
     };
 
     struct TMsgQoSBS {
-        ui32 DeadlineSeconds;
+        ui32 DeadlineSeconds = 0;
         TMessageIdBS MsgId;
-        ui64 Cos;
+        ui64 Cos = 0;
         NKikimrBlobStorage::EVDiskQueueId ExtQueueId;
         EVDiskInternalQueueIdBS IntQueueId;
         TVDiskCostSettingsBS CostSettings;
@@ -135,30 +134,30 @@ namespace BSRecords {
         } */
         TExecTimeStatsBS ExecTimeStats;
         TActorIdBS SenderActorId;
-        ui64 InternalMessageId;  // for in-process use
+        ui64 InternalMessageId = 0;  // for in-process use
     };
 
     struct TTimestampsBS {
-        ui64 SentByDSProxyUs;
-        ui64 ReceivedByVDiskUs;
-        ui64 SentByVDiskUs;
-        ui64 ReceivedByDSProxyUs;
+        ui64 SentByDSProxyUs = 0;
+        ui64 ReceivedByVDiskUs = 0;
+        ui64 SentByVDiskUs = 0;
+        ui64 ReceivedByDSProxyUs = 0;
     };
 
     struct TEvVPutBS {
         struct TExtraBlockCheck {
-            ui64 TabletId1;
-            ui32 Generation;
+            ui64 TabletId1 = 0;
+            ui32 Generation = 0;
         };
 
         TLogoBlobIDBS BlobID;
 
         TVDiskIDBS VDiskID;
 
-        ui64 FullDataSize;
+        ui64 FullDataSize = 0;
         bool IgnoreBlock;
         bool NotifyIfNotReady;
-        ui64 Cookie;
+        ui64 Cookie = 0;
         NKikimrBlobStorage::EPutHandleClass HandleClass;
         TMsgQoSBS MsgQoS;
         TTimestampsBS Timestamps;
@@ -271,8 +270,9 @@ namespace NActorsBinarySerialization {
     >{};
     /* template<>
     struct TBinarySerializer<TEvVPutBS> {
-        static bool Serialize(const TEvVPutBS& value, TBinaryChunkSerializer& ser) {
-            return ser.Append(value);
+        static bool Serialize(const TEvVPutBS& value, TBinaryOutBuffer& dest) {
+            dest.Append(value);
+            return true;
         }
 
         static bool Deserialize(TEvVPutBS& value, TBinaryChunkDeserializer& ser) {

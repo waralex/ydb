@@ -24,7 +24,6 @@ SRCS(
     vdisk_outofspace_ut.cpp
     vdisk_pdisk_error_ut.cpp
     vdisk_syncneighbors_ut.cpp
-    put_serialization_poc_ut.cpp
 )
 
 END()

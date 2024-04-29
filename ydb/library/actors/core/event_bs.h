@@ -11,6 +11,7 @@
 
 #include <array>
 #include <concepts>
+#include <cstdint>
 #include <iterator>
 #include <span>
 #include <type_traits>
@@ -25,6 +26,9 @@ namespace NActorsBinarySerialization {
     class TBinaryChunkSerializer;
     class TBinaryChunkDeserializer;
 
+    class TBinaryOutBuffer;
+    class TBinaryInBuffer;
+
     template <typename T>
     struct TBinarySerializer;
 
@@ -33,6 +37,9 @@ namespace NActorsBinarySerialization {
 
     template <typename... Fields>
     struct TOwnerExtractor;
+
+    template <typename T>
+    struct TUnpackOptional;
 
     //========= Concepts =========
 
@@ -57,9 +64,9 @@ namespace NActorsBinarySerialization {
 
     template <typename TS, typename T>
     concept CSerializer =
-        requires(T& t, TBinaryChunkSerializer& s, TBinaryChunkDeserializer& d) {
-            TS::Serialize(static_cast<const T&>(t), s);
-            TS::Deserialize(t, d);
+        requires(T& t, TBinaryOutBuffer& dest, TBinaryInBuffer& src) {
+            TS::Serialize(static_cast<const T&>(t), dest);
+            TS::Deserialize(t, src);
             TS::SerializedSize(t);
         };
 
@@ -93,6 +100,49 @@ namespace NActorsBinarySerialization {
             t.end();
         };
 
+    //============== Binary Buffers =============================
+
+    class TBinaryOutBuffer {
+        TString Buffer;
+        char* Ptr;
+
+    public:
+        TBinaryOutBuffer(size_t size) : Buffer(size, 0), Ptr(Buffer.begin()) {
+        }
+        template <typename T>
+            requires std::is_trivially_copyable_v<T>
+        void Append(const T& value) {
+            memcpy(Ptr, &value, sizeof(T));
+            Ptr += sizeof(T);
+        }
+        char* Skip(size_t size) {
+            auto res = Ptr;
+            Ptr += size;
+            return res;
+        }
+        const TString& GetBuffer() const {
+            return Buffer;
+        }
+    };
+
+    class TBinaryInBuffer {
+        const char* Ptr;
+
+    public:
+        TBinaryInBuffer(const char* ptr) : Ptr(ptr) {
+        }
+        template <typename T>
+            requires std::is_trivially_copyable_v<T>
+        void Load(T& value) {
+            memcpy(&value, Ptr, sizeof(T));
+            Ptr += sizeof(T);
+        }
+        const char* Skip(size_t size) {
+            auto res = Ptr;
+            Ptr += size;
+            return res;
+        }
+    };
     //========= Fields aka struct member serialization ============
 
     template <CBSStruct T, typename FT, FT T::*Ptr, CSerializer<FT> TS>
@@ -101,18 +151,51 @@ namespace NActorsBinarySerialization {
         using TField = std::remove_reference_t<FT>;
         using TSer = TS;
         constexpr static FT T::*FPtr = Ptr;
+        constexpr static bool IsOptional = false;
 
-        static bool Serialize(const TOwner& owner,
-                              TBinaryChunkSerializer& ser) {
-            return TSer::Serialize(owner.*FPtr, ser);
+        static bool Serialize(const TOwner& owner, TBinaryOutBuffer& dest) {
+            return TSer::Serialize(owner.*FPtr, dest);
         }
 
-        static bool Deserialize(TOwner& owner, TBinaryChunkDeserializer& ser) {
-            return TSer::Deserialize(owner.*FPtr, ser);
+        static bool Deserialize(TOwner& owner, TBinaryInBuffer& src) {
+            return TSer::Deserialize(owner.*FPtr, src);
         }
 
         static size_t SerializedSize(const TOwner& owner) {
             return TSer::SerializedSize(owner.*FPtr);
+        }
+    };
+
+    // Optional field
+    template <CBSStruct T, typename FT, std::optional<FT> T::*Ptr, CSerializer<FT> TS>
+    struct TOptionalFieldSerializerImpl {
+        using TOwner = T;
+        using TField = std::remove_reference_t<FT>;
+        using TSer = TS;
+        constexpr static bool IsOptional = true;
+
+        static bool Serialize(const TOwner& owner, TBinaryOutBuffer& dest) {
+            return TSer::Serialize((owner.*Ptr).value(), dest);
+        }
+
+        static bool Deserialize(TOwner& owner, TBinaryInBuffer& src) {
+            FT v;
+
+            TSer::Deserialize(v, src);
+            owner.*Ptr = v;
+            return true;
+        }
+
+        static bool IsNullopt(const TOwner& owner) {
+            return owner.*Ptr == std::nullopt;
+        }
+
+        static void SetDefault(TOwner& owner) {
+            owner.*Ptr = std::nullopt;
+        }
+
+        static size_t SerializedSize(const TOwner& owner) {
+            return TSer::SerializedSize((owner.*Ptr).value());
         }
     };
 
@@ -131,33 +214,89 @@ namespace NActorsBinarySerialization {
     struct TStructSerializerImpl<TOwner, Field, Fields...> {
         using TTail = TStructSerializerImpl<TOwner, Fields...>;
 
-        static bool Serialize(const TOwner& owner,
-                              TBinaryChunkSerializer& ser) {
-            if (Field::Serialize(owner, ser)) {
-                if constexpr (sizeof...(Fields) != 0) {
-                    return TTail::Serialize(owner, ser);
+        static consteval size_t OptionalFieldsSize() {
+            size_t v = 0;
+            if constexpr (Field::IsOptional) {
+                v = 1;
+            }
+            if constexpr (sizeof...(Fields) > 0) {
+                v += TTail::OptionalFieldsSize();
+            }
+            return v;
+        }
+
+        static consteval std::pair<size_t, uint8_t> OptionalBitOffsetMask() {
+            size_t size = OptionalFieldsSize();
+            size_t bitN = size > 0 ? size - 1 : 0;
+            size_t offset = bitN / 8;
+            uint8_t mask = 1 << (bitN % 8);
+            return std::make_pair(offset, mask);
+        }
+
+        static constexpr size_t OptionalFieldsSizeV =
+            OptionalFieldsSize();
+
+        static void SerializeWithOptionalBuffer(const TOwner& owner,
+                                          TBinaryOutBuffer& dest,
+                                          char* optionalBuffer) {
+            if constexpr (Field::IsOptional) {
+                static constexpr auto indexMask = OptionalBitOffsetMask();
+                if (Field::IsNullopt(owner)) {
+                    optionalBuffer[indexMask.first] |= indexMask.second;
                 } else {
-                    return true;
+                    Field::Serialize(owner, dest);
                 }
             } else {
-                return false;
+                Field::Serialize(owner, dest);
+            }
+
+            if constexpr (sizeof...(Fields) > 0) {
+                TTail::SerializeWithOptionalBuffer(owner, dest, optionalBuffer);
             }
         }
 
-        static bool Deserialize(TOwner& owner, TBinaryChunkDeserializer& ser) {
-            if (Field::Deserialize(owner, ser)) {
-                if constexpr (sizeof...(Fields) != 0) {
-                    return TTail::Deserialize(owner, ser);
+        static bool Serialize(const TOwner& owner, TBinaryOutBuffer& dest) {
+            Field::Serialize(owner, dest);
+            if constexpr (sizeof...(Fields) != 0) {
+                return TTail::Serialize(owner, dest);
+            } else {
+                return true;
+            }
+        }
+        static void DeserializeWithOptionalBuff(TOwner& owner, TBinaryInBuffer& src,
+                                            const char* optionalBuffer) {
+            if constexpr (Field::IsOptional) {
+                static constexpr auto indexMask = OptionalBitOffsetMask();
+                if (!(optionalBuffer[indexMask.first] & indexMask.second)) {
+                    Field::Deserialize(owner, src);
                 } else {
-                    return true;
+                    Field::SetDefault(owner);
                 }
             } else {
-                return false;
+                Field::Deserialize(owner, src);
             }
+            if constexpr (sizeof...(Fields) > 0) {
+                TTail::DeserializeWithOptionalBuff(owner, src, optionalBuffer);
+            }
+        }
+
+        static bool Deserialize(TOwner& owner, TBinaryInBuffer& src) {
+            Field::Deserialize(owner, src);
+            if constexpr (sizeof...(Fields) != 0) {
+                TTail::Deserialize(owner, src);
+            } else {
+                return true;
+            }
+            return true;
         }
 
         static size_t SerializedSize(const TOwner& owner) {
-            size_t res = Field::SerializedSize(owner);
+            size_t res = 0;
+            if constexpr (Field::IsOptional) {
+                res += Field::IsNullopt(owner) ? 0 : Field::SerializedSize(owner);
+            } else {
+                res += Field::SerializedSize(owner);
+            }
 
             if constexpr (sizeof...(Fields) != 0) {
                 res += TTail::SerializedSize(owner);
@@ -172,33 +311,60 @@ namespace NActorsBinarySerialization {
 
     private:
         using TImpl = TStructSerializerImpl<TOwner, Fields...>;
+        static constexpr size_t OptionalFieldsSize =
+            TImpl::OptionalFieldsSize();
 
     public:
-        static bool Serialize(const TOwner& owner,
-                              TBinaryChunkSerializer& ser) {
-            return TImpl::Serialize(owner, ser);
+        static bool Serialize(const TOwner& owner, TBinaryOutBuffer& dest) {
+            if constexpr (OptionalFieldsSize > 0) {
+                static constexpr size_t optionalBufferSize =
+                    OptionalFieldsSize / 8 + 1;
+                char* optionalBuffer = dest.Skip(optionalBufferSize);
+                TImpl::SerializeWithOptionalBuffer(owner, dest, optionalBuffer);
+
+            } else {
+                TImpl::Serialize(owner, dest);
+            }
+            return true;
         }
 
-        static bool Deserialize(TOwner& owner, TBinaryChunkDeserializer& ser) {
-            return TImpl::Deserialize(owner, ser);
+        static bool Deserialize(TOwner& owner, TBinaryInBuffer& src) {
+            if constexpr (OptionalFieldsSize > 0) {
+                static constexpr size_t optionalBufferSize =
+                    OptionalFieldsSize / 8 + 1;
+                const char* optionalBuffer = src.Skip(optionalBufferSize);
+                TImpl::DeserializeWithOptionalBuff(owner, src, optionalBuffer);
+
+            } else {
+                TImpl::Deserialize(owner, src);
+            }
+            return true;
         }
 
         static size_t SerializedSize(const TOwner& owner) {
-            return TImpl::SerializedSize(owner);
+            size_t res = 0;
+            if constexpr (OptionalFieldsSize > 0) {
+                static constexpr size_t optionalBufferSize =
+                    OptionalFieldsSize / 8 + 1;
+                res += optionalBufferSize;
+
+            } else {
+            }
+            return res + TImpl::SerializedSize(owner);
         }
     };
 
     //============= Functions =================
     template <typename T>
         requires CDefaultSerializable<T>
-    bool Serialize(const T& value, TBinaryChunkSerializer& ser) {
-        return TBinarySerializer<T>::Serialize(value, ser);
+    bool Serialize(const T& value, TBinaryOutBuffer& dest) {
+        return TBinarySerializer<T>::Serialize(value, dest);
     }
 
     template <typename T>
         requires CDefaultSerializable<T>
-    bool Deserialize(T& value, TBinaryChunkDeserializer& ser) {
-        return TBinarySerializer<T>::Deserialize(value, ser);
+    bool Deserialize(T& value, TBinaryInBuffer& src) {
+        return TBinarySerializer<T>::Deserialize(value, src);
     }
 
     template <typename T>
@@ -219,6 +385,18 @@ namespace NActorsBinarySerialization {
         using TSerializer = TFieldSerializerImpl<T, TField, FPtr, TS>;
     };
 
+    template <typename T, typename FT, FT T::*Ptr>
+        requires TUnpackOptional<FT>::IsOptional
+    struct TUnpackMemberPtr<Ptr> {
+        using TOwner = T;
+        using TField = std::remove_reference_t<FT>;
+        using TOrigin = TUnpackOptional<TField>::TOrigin;
+        constexpr static FT T::*FPtr = Ptr;
+        using TDefaultFieldSerializer = TBinarySerializer<TOrigin>;
+        template <typename TS>
+        using TSerializer = TOptionalFieldSerializerImpl<T, TOrigin, FPtr, TS>;
+    };
+
     template <typename... Fields>
     struct TOwnerExtractor;
 
@@ -234,6 +412,17 @@ namespace NActorsBinarySerialization {
             }
         }
         static_assert(CheckTOwner(), "Members of single class expected");
+    };
+
+    template <typename T>
+    struct TUnpackOptional {
+        static constexpr bool IsOptional = false;
+    };
+
+    template <typename T>
+    struct TUnpackOptional<std::optional<T>> {
+        static constexpr bool IsOptional = true;
+        using TOrigin = T;
     };
 
     class TNullBuff {
@@ -326,7 +515,6 @@ namespace NActorsBinarySerialization {
               CurrentDest(CurrentDest) {
         }
 
-
         template <typename T>
             requires std::is_trivially_copyable_v<T>
         bool Append(const T& value) {
@@ -368,7 +556,8 @@ namespace NActorsBinarySerialization {
         TRope::TConstIterator End;
 
     public:
-        TBinaryChunkDeserializer(TRope::TConstIterator iter, TRope::TConstIterator end)
+        TBinaryChunkDeserializer(TRope::TConstIterator iter,
+                                 TRope::TConstIterator end)
             : Iter(iter), End(end) {
         }
 
@@ -425,12 +614,15 @@ namespace NActorsBinarySerialization {
 
         bool Check(char marker) {
             if (Iter.Valid() && *Iter.ContiguousData() == marker) {
-                Iter+=1;
+                Iter += 1;
                 return true;
             } else {
                 return false;
             }
+        }
 
+        TString TailToString() {
+            return TRope(Iter, End).ConvertToString();
         }
     };
 
@@ -440,12 +632,14 @@ namespace NActorsBinarySerialization {
         requires CTriviaSerializable<T> ||
                  CStaticContainerWithTriviaSerializable<T>
     struct TBinarySerializer<T> {
-        static bool Serialize(const T& value, TBinaryChunkSerializer& ser) {
-            return ser.Append(value);
+        static bool Serialize(const T& value, TBinaryOutBuffer& dest) {
+            dest.Append(value);
+            return true;
         }
 
-        static bool Deserialize(T& value, TBinaryChunkDeserializer& ser) {
-            return ser.Load(value);
+        static bool Deserialize(T& value, TBinaryInBuffer& src) {
+            src.Load(value);
+            return true;
         }
 
         static size_t SerializedSize(const T& value) {
@@ -462,15 +656,12 @@ namespace NActorsBinarySerialization {
         using TSize = T::size_type;
 
     public:
-        static bool Serialize(const T& value, TBinaryChunkSerializer& ser) {
+        static bool Serialize(const T& value, TBinaryOutBuffer& dest) {
             TSize size = value.size();
-            if (!ser.Append(size)) {
-                return false;
-            }
+            dest.Append(size);
+
             for (auto& v : value) {
-                if (!TSerializer::Serialize(v, ser)) {
-                    return false;
-                }
+                TSerializer::Serialize(v, dest);
             }
             return true;
         }
@@ -550,7 +741,8 @@ namespace NActors {
         static IEventBase* Load(TEventSerializedData* input) {
             THolder<TEventBS> ev(new TEv());
             if (input->GetSize()) {
-                TBinaryChunkDeserializer desializer(input->GetBeginIter(), input->GetEndIter());
+                TBinaryChunkDeserializer desializer(input->GetBeginIter(),
+                                                    input->GetEndIter());
 
                 if (const auto& info = input->GetSerializationInfo();
                     info.IsExtendedFormat) {
@@ -573,14 +765,16 @@ namespace NActors {
 
                         } else {
                             Y_ABORT("invalid event");
-
                         }
                     }
                 }
 
-                if (!Deserialize(ev->Record, desializer)) {
-                    Y_ABORT("Failed to parse protobuf event type %" PRIu32 "class %s", TEventType, TypeName(ev->Record).data());
-                }
+                // FIXME Temporary we assume here what tail of input is
+                // Contiguous Data
+                auto recordString = desializer.TailToString();
+                TBinaryInBuffer recordBuffer(recordString.data());
+
+                Deserialize(ev->Record, recordBuffer);
                 ev->CachedByteSize = input->GetSize();
             }
             return ev.Release();
@@ -646,12 +840,15 @@ namespace NActors {
                 if (Payload) {
                     char temp[MaxNumberBytes];
                     info.Sections.push_back(TEventSectionInfo{
-                        0, 1 + TBinaryChunkSerializer::SerializeNumber(Payload.size(), temp), 0, 0,
-                        true});  // payload marker and rope count
+                        0,
+                        1 + TBinaryChunkSerializer::SerializeNumber(
+                                Payload.size(), temp),
+                        0, 0, true});  // payload marker and rope count
                     for (const TRope& rope : Payload) {
                         const size_t ropeSize = rope.GetSize();
                         info.Sections.back().Size +=
-                            TBinaryChunkSerializer::SerializeNumber(ropeSize, temp);
+                            TBinaryChunkSerializer::SerializeNumber(ropeSize,
+                                                                    temp);
                         info.Sections.push_back(TEventSectionInfo{
                             0, ropeSize, 0, 0,
                             false});  // data as a separate section
@@ -699,9 +896,9 @@ namespace NActors {
                 return false;
             }
 
-            if (!Serialize(Record, serializer)) {
-                return false;
-            }
+            TBinaryOutBuffer buffer(SerializedSize(Record));
+            Serialize(Record, buffer);
+            serializer.WriteString(buffer.GetBuffer());
 
             serializer.Finish();
             return true;
@@ -714,6 +911,5 @@ namespace NActors {
         static constexpr char PayloadMarker = 0x07;
         static constexpr size_t MaxNumberBytes =
             (sizeof(size_t) * CHAR_BIT + 6) / 7;
-
     };
 }  // namespace NActors

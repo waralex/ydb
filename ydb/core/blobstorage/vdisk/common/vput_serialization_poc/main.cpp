@@ -1,20 +1,22 @@
 
+#include <util/generic/xrange.h>
+#include <util/system/sigset.h>
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/actorsystem.h>
+#include <ydb/library/actors/core/executor_pool_basic.h>
+#include <ydb/library/actors/core/log.h>
+#include <ydb/library/actors/core/scheduler_basic.h>
+#include <ydb/library/actors/util/should_continue.h>
+
 #include <algorithm>
 #include <array>
 #include <numeric>
 #include <ranges>
-#include <ydb/library/actors/core/actorsystem.h>
-#include <ydb/library/actors/core/executor_pool_basic.h>
-#include <ydb/library/actors/core/scheduler_basic.h>
-#include <ydb/library/actors/core/log.h>
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/util/should_continue.h>
-#include <util/system/sigset.h>
-#include <util/generic/xrange.h>
 
 #include "../vdisk_events.h"
 #include "util/datetime/base.h"
 #include "util/generic/algorithm.h"
+#include "util/generic/ptr.h"
 #include "util/generic/reserve.h"
 #include "util/generic/vector.h"
 #include "util/stream/format.h"
@@ -161,6 +163,89 @@ namespace {
     };
 
     template <typename TEv>
+    struct TFill {
+        void operator()(TEv* ev) {
+            Y_UNUSED(ev);
+        }
+    };
+
+    template <>
+    struct TFill<TEvBlobStorage::TEvVPutBS> {
+        void operator()(TEvBlobStorage::TEvVPutBS* ev) {
+            ev->Record.Timestamps.SentByDSProxyUs = 12210000;
+            ev->Record.Timestamps.SentByVDiskUs = 1221;
+            ev->Record.Timestamps.ReceivedByVDiskUs = 12200001;
+            ev->Record.Timestamps.ReceivedByDSProxyUs = 122000010000;
+
+            ev->Record.MsgQoS.MsgId.MsgId = 10088;
+            ev->Record.MsgQoS.MsgId.SequenceId = 10088333;
+            auto& costSettings = ev->Record.MsgQoS.CostSettings;
+            costSettings.SeekTimeUs = 400000;
+            costSettings.ReadSpeedBps = 401000;
+            costSettings.WriteSpeedBps = 401000;
+            costSettings.ReadBlockSize = 401600;
+            costSettings.WriteBlockSize = 411600;
+            costSettings.MinREALHugeBlobInBytes = 41;
+
+            auto& windowFeedback = ev->Record.MsgQoS.Window;
+            windowFeedback.ActualWindowSize = 1000;
+            windowFeedback.MaxWindowSize = 1500;
+            windowFeedback.FailedMsgId.MsgId = 100;
+            windowFeedback.FailedMsgId.SequenceId = 300;
+
+            windowFeedback.ExpectedMsgId.MsgId = 100;
+            windowFeedback.ExpectedMsgId.SequenceId = 300;
+
+            auto& execTimeStats = ev->Record.MsgQoS.ExecTimeStats;
+            execTimeStats.SubmitTimestamp = 4000000;
+            execTimeStats.InSenderQueue = 4000001;
+            execTimeStats.Total = 400220001;
+            execTimeStats.InQueue = 4002204001;
+            execTimeStats.Execution = 4002204001;
+            execTimeStats.HugeWriteTime = 4002204001;
+        }
+    };
+
+    template <>
+    struct TFill<TEvBlobStorage::TEvVPut> {
+        void operator()(TEvBlobStorage::TEvVPut* ev) {
+            auto timestamps = ev->Record.MutableTimestamps();
+            timestamps->SetSentByDSProxyUs(12210000);
+            timestamps->SetSentByVDiskUs(1221);
+            timestamps->SetReceivedByVDiskUs(12200001);
+            timestamps->SetReceivedByDSProxyUs(122000010000);
+
+            auto msgQoS = ev->Record.MutableMsgQoS();
+            msgQoS->MutableMsgId()->SetMsgId(10088);
+            msgQoS->MutableMsgId()->SetSequenceId(10088333);
+            auto costSettings = msgQoS->MutableCostSettings();
+            costSettings->SetSeekTimeUs(400000);
+            costSettings->SetReadSpeedBps(401000);
+            costSettings->SetWriteSpeedBps(401000);
+            costSettings->SetReadBlockSize(401600);
+            costSettings->SetWriteBlockSize(411600);
+            costSettings->SetMinREALHugeBlobInBytes(41);
+
+            auto windowFeedback = msgQoS->MutableWindow();
+            windowFeedback->SetActualWindowSize(1000);
+            windowFeedback->SetMaxWindowSize(1500);
+            windowFeedback->MutableFailedMsgId()->SetMsgId(100);
+            windowFeedback->MutableFailedMsgId()->SetSequenceId(300);
+
+            windowFeedback->MutableExpectedMsgId()->SetMsgId(100);
+            windowFeedback->MutableExpectedMsgId()->SetSequenceId(300);
+
+            auto execTimeStats = msgQoS->MutableExecTimeStats();
+            execTimeStats->SetSubmitTimestamp(4000000);
+            execTimeStats->SetInSenderQueue(4000001);
+            execTimeStats->SetTotal(400220001);
+            execTimeStats->SetInQueue(4002204001);
+            execTimeStats->SetExecution(4002204001);
+            execTimeStats->SetHugeWriteTime(4002204001);
+        }
+    };
+
+    template <typename TEv>
     class TSerializationBenchmarkUnit {
         size_t Count;
         size_t PayloadSize;
@@ -215,6 +300,30 @@ namespace {
                                                Count * PayloadSize, Count);
         }
 
+        void Compare() {
+            for (size_t i = 0; i < IncomingEvents.size(); i++) {
+                auto& inEvent = IncomingEvents[i];
+                auto& OutEvent = OutcomingEvents[i];
+                if (!inEvent->GetPayloadCount()) {
+                    Cout << "!!! Payload count is zero" << Endl;
+                }
+                if (inEvent->GetPayloadCount() != OutEvent->GetPayloadCount()) {
+                    Cout << "!!! Payload counts not equal" << Endl;
+                }
+                size_t totalSize = 0;
+                for (size_t pi = 0; pi < inEvent->GetPayloadCount(); pi++) {
+                    totalSize += inEvent->GetPayload(pi).GetSize();
+                    if (inEvent->GetPayload(pi) != OutEvent->GetPayload(pi)) {
+                        Cout << "!!! Payloads not equal" << Endl;
+                    }
+                }
+                if (totalSize != PayloadSize) {
+                    Cout << "!!! Total size not equal" << Endl;
+                }
+            }
+        }
+
+
     private:
         void AddEvent(size_t payloadSize) {
             TBlobStorageGroupType::EErasureSpecies erasureSpecies =
@@ -225,9 +334,12 @@ namespace {
             TLogoBlobID logoblobid(1, 1, 1, 0, 100, 3, 1);
 
             TVDiskID vDiskId(0, 1, 0, vDiskIdx, 0);
-            IncomingEvents.emplace_back(new TEv(logoblobid, testData, vDiskId,
-                                                false, nullptr, TInstant::Max(),
-                                                NKikimrBlobStorage::AsyncBlob));
+            auto ev =
+                MakeHolder<TEv>(logoblobid, testData, vDiskId, false, nullptr,
+                                TInstant::Max(), NKikimrBlobStorage::AsyncBlob);
+            TFill<TEv>()(ev.Get());
+
+            IncomingEvents.push_back(std::move(ev));
         }
     };
 
@@ -256,6 +368,7 @@ namespace {
                 auto start = TInstant::Now();
                 serRes.pushBack(unit.RunSerialization());
                 deserRes.pushBack(unit.RunDeserialization());
+                unit.Compare();
                 auto duration = TInstant::Now() - start;
                 totalDuration += duration;
             }
@@ -265,32 +378,41 @@ namespace {
 
 }  // namespace
 
-template<>
-[[maybe_unused]] inline void Out<TBenchmarkStats>(IOutputStream& o, const TBenchmarkStats &stats) {
+template <>
+[[maybe_unused]] inline void Out<TBenchmarkStats>(
+    IOutputStream& o, const TBenchmarkStats& stats) {
     stats.Out(o);
 }
 int main(int argc, char** argv) {
     Y_UNUSED(argc);
     Y_UNUSED(argv);
-    {
-        Cerr << "32 bytes of payload" << Endl;
-        TSerializationBenchmark<TEvBlobStorage::TEvVPut> bench(10000, 100, 32);
-        auto [serRes, deserRes] = bench.Run();
-        Cerr << "    [========== Serialization Benchmark ===========]" << Endl;
-        serRes.OutStats(Cerr, 8);
-        Cerr << "    [========== Deserialization Benchmark ===========]"
-             << Endl;
-        deserRes.OutStats(Cerr, 8);
-    }
-    {
-        Cerr << "32 bytes of payload bs" << Endl;
-        TSerializationBenchmark<TEvBlobStorage::TEvVPutBS> bench(10000, 100,
-                                                                 32);
-        auto [serRes, deserRes] = bench.Run();
-        Cerr << "    [========== Serialization Benchmark ===========]" << Endl;
-        serRes.OutStats(Cerr, 8);
-        Cerr << "    [========== Deserialization Benchmark ===========]"
-             << Endl;
-        deserRes.OutStats(Cerr, 8);
+    std::array payloadSizes{32, 128, 4096};
+    for (auto pSize : payloadSizes) {
+        Cout << "========== " << pSize
+             << " bytes of payload =============" << Endl;
+        {
+            Cout << "    ProtoBuf" << Endl;
+            TSerializationBenchmark<TEvBlobStorage::TEvVPut> bench(100000, 20,
+                                                                   pSize);
+            auto [serRes, deserRes] = bench.Run();
+            Cout << "        [========== Serialization Benchmark ===========]"
+                 << Endl;
+            serRes.OutStats(Cout, 12);
+            Cout << "        [========== Deserialization Benchmark ===========]"
+                 << Endl;
+            deserRes.OutStats(Cout, 12);
+        }
+        {
+            Cout << "    BinarySerialization" << Endl;
+            TSerializationBenchmark<TEvBlobStorage::TEvVPutBS> bench(100000, 20,
+                                                                     pSize);
+            auto [serRes, deserRes] = bench.Run();
+            Cout << "        [========== Serialization Benchmark ===========]"
+                 << Endl;
+            serRes.OutStats(Cout, 12);
+            Cout << "        [========== Deserialization Benchmark ===========]"
+                 << Endl;
+            deserRes.OutStats(Cout, 12);
+        }
     }
 }
