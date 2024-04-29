@@ -8,6 +8,7 @@ namespace BSRecords {
         ui64 RawX1 = 0;
         ui64 RawX2 = 0;
         ui64 RawX3 = 0;
+        bool operator==(const TLogoBlobIDBS&) const = default;
     };
 
     struct TVDiskIDBS {
@@ -16,6 +17,7 @@ namespace BSRecords {
         ui32 Ring = 0;
         ui32 Domain = 0;
         ui32 VDisk = 0;
+        bool operator==(const TVDiskIDBS&) const = default;
     };
 
     enum class EPutHandleClassBS : ui8 {
@@ -33,6 +35,7 @@ namespace BSRecords {
         // implement flow control (i.e. windows)
         ui64 SequenceId = 0;
         ui64 MsgId = 0;
+        bool operator==(const TMessageIdBS&) const = default;
     };
 
     enum class EVDiskQueueIdBS : ui8 {
@@ -48,7 +51,7 @@ namespace BSRecords {
         GetLowRead = 7,
     };
 
-    enum EVDiskInternalQueueIdBS {
+    enum EVDiskInternalQueueIdBS: ui8 {
         IntUnknown = 0,
         IntBegin = 1,
         IntGetAsync = 1,
@@ -68,6 +71,7 @@ namespace BSRecords {
         ui64 ReadBlockSize = 0;
         ui64 WriteBlockSize = 0;
         ui32 MinREALHugeBlobInBytes = 0;
+        bool operator==(const TVDiskCostSettingsBS&) const = default;
     };
 
     struct TWindowFeedbackBS {
@@ -88,6 +92,7 @@ namespace BSRecords {
         ui64 MaxWindowSize = 0;
         TMessageIdBS ExpectedMsgId;
         TMessageIdBS FailedMsgId;
+        bool operator==(const TWindowFeedbackBS&) const = default;
     };
 
     struct TExecTimeStatsBS {
@@ -107,11 +112,13 @@ namespace BSRecords {
         // detailed stats
         ui64 HugeWriteTime = 0;  // time spent while writing Huge Blob (included
                                 // in Execution time)
+        bool operator==(const TExecTimeStatsBS&) const = default;
     };
 
     struct TActorIdBS {
         ui64 RawX1 = 0;
         ui64 RawX2 = 0;
+        bool operator==(const TActorIdBS&) const = default;
     };
 
     struct TMsgQoSBS {
@@ -135,6 +142,7 @@ namespace BSRecords {
         TExecTimeStatsBS ExecTimeStats;
         TActorIdBS SenderActorId;
         ui64 InternalMessageId = 0;  // for in-process use
+        bool operator==(const TMsgQoSBS&) const = default;
     };
 
     struct TTimestampsBS {
@@ -142,6 +150,7 @@ namespace BSRecords {
         ui64 ReceivedByVDiskUs = 0;
         ui64 SentByVDiskUs = 0;
         ui64 ReceivedByDSProxyUs = 0;
+        bool operator==(const TTimestampsBS&) const = default;
     };
 
     struct TEvVPutBS {
@@ -161,6 +170,7 @@ namespace BSRecords {
         NKikimrBlobStorage::EPutHandleClass HandleClass;
         TMsgQoSBS MsgQoS;
         TTimestampsBS Timestamps;
+        bool operator==(const TEvVPutBS&) const = default;
 
         //std::vector<TExtraBlockCheck> ExtraBlockChecks;
     };
@@ -232,6 +242,7 @@ namespace NActorsBinarySerialization {
         TFieldSerializer<&TMsgQoSBS::MsgId>,
         TFieldSerializer<&TMsgQoSBS::Cos>,
         TFieldSerializer<&TMsgQoSBS::ExtQueueId>,
+        TFieldSerializer<&TMsgQoSBS::IntQueueId>,
         TFieldSerializer<&TMsgQoSBS::CostSettings>,
         TFieldSerializer<&TMsgQoSBS::SendMeCostSettings>,
         TFieldSerializer<&TMsgQoSBS::Window>,
@@ -245,7 +256,7 @@ namespace NActorsBinarySerialization {
         TFieldSerializer<&TTimestampsBS::SentByDSProxyUs>,
         TFieldSerializer<&TTimestampsBS::ReceivedByDSProxyUs>,
         TFieldSerializer<&TTimestampsBS::SentByVDiskUs>,
-        TFieldSerializer<&TTimestampsBS::ReceivedByDSProxyUs>
+        TFieldSerializer<&TTimestampsBS::ReceivedByVDiskUs>
     >{};
 
     template<>

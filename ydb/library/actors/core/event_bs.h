@@ -112,7 +112,7 @@ namespace NActorsBinarySerialization {
         template <typename T>
             requires std::is_trivially_copyable_v<T>
         void Append(const T& value) {
-            memcpy(Ptr, &value, sizeof(T));
+            *reinterpret_cast<T*>(Ptr) = value;
             Ptr += sizeof(T);
         }
         char* Skip(size_t size) {
@@ -134,7 +134,7 @@ namespace NActorsBinarySerialization {
         template <typename T>
             requires std::is_trivially_copyable_v<T>
         void Load(T& value) {
-            memcpy(&value, Ptr, sizeof(T));
+            value = *reinterpret_cast<const T*>(Ptr);
             Ptr += sizeof(T);
         }
         const char* Skip(size_t size) {

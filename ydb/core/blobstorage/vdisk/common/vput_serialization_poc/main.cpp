@@ -303,17 +303,22 @@ namespace {
         void Compare() {
             for (size_t i = 0; i < IncomingEvents.size(); i++) {
                 auto& inEvent = IncomingEvents[i];
-                auto& OutEvent = OutcomingEvents[i];
+                auto& outEvent = OutcomingEvents[i];
+                if constexpr (std::is_same_v<TEv, TEvBlobStorage::TEvVPutBS>) {
+                    if (outEvent->Record != inEvent->Record) {
+                        Cout << "!!!! BS Events not equal" << Endl;
+                    }
+                }
                 if (!inEvent->GetPayloadCount()) {
                     Cout << "!!! Payload count is zero" << Endl;
                 }
-                if (inEvent->GetPayloadCount() != OutEvent->GetPayloadCount()) {
+                if (inEvent->GetPayloadCount() != outEvent->GetPayloadCount()) {
                     Cout << "!!! Payload counts not equal" << Endl;
                 }
                 size_t totalSize = 0;
                 for (size_t pi = 0; pi < inEvent->GetPayloadCount(); pi++) {
                     totalSize += inEvent->GetPayload(pi).GetSize();
-                    if (inEvent->GetPayload(pi) != OutEvent->GetPayload(pi)) {
+                    if (inEvent->GetPayload(pi) != outEvent->GetPayload(pi)) {
                         Cout << "!!! Payloads not equal" << Endl;
                     }
                 }
